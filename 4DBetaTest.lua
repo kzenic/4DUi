@@ -1923,7 +1923,7 @@ local Column = {}
 Column.__index = Column
 
 local function createSectionFor(tab, parent, name, layoutOwner)
-    local section = setmetatable({ _tab = tab, _customization = tab._customization and table.clone(tab._customization) or nil }, Section)
+    local section = setmetatable({ _tab = tab, _name = tostring(name or "Section"), _customization = tab._customization and table.clone(tab._customization) or nil }, Section)
     local card = make("Frame", {
         Name = "Section_" .. tostring(name or "Section"),
         Size = UDim2.new(1, -4, 0, 0),
@@ -4470,7 +4470,7 @@ local function fourDApplyElementStyle(row, style)
     if type(font) == "string" and Enum.Font[font] then font = Enum.Font[font] end
     for _, object in ipairs(row:GetDescendants()) do
         pcall(function()
-            if bg and (object:IsA("TextButton") or object:IsA("TextBox")) then
+            if bg and (object:IsA("TextBox") or (object:IsA("TextButton") and object.Name ~= "ToggleTrack" and object.Name ~= "ColorSwatch")) then
                 object.BackgroundColor3 = bg
                 object:SetAttribute("4D_CustomElementBackground", true)
             end
@@ -4478,7 +4478,7 @@ local function fourDApplyElementStyle(row, style)
                 object.TextColor3 = textColor
                 object:SetAttribute("4D_CustomElementText", true)
             end
-            if accent and (object:IsA("TextButton") or object.Name == "SliderFill" or object.Name == "ToggleTrack" or object.Name == "ColorSwatch" or object:IsA("UIGradient")) then
+            if accent and ((object:IsA("TextButton") and object.Name ~= "ToggleTrack" and object.Name ~= "ColorSwatch") or object.Name == "SliderFill" or object.Name == "ToggleTrack" or object:IsA("UIGradient")) then
                 if object:IsA("UIGradient") then
                     object.Color = ColorSequence.new(accent, accent:Lerp(Color3.new(1,1,1), 0.18))
                 else
@@ -5774,6 +5774,202 @@ if FOURD_CONFIG.AutoStartDemo == true then
 else
     print("[4D v" .. Library.Version .. "] Library loaded. Create a window with FourD:CreateWindow(config).")
 end
+
+-- 4D v5.3.3: automatic global customization panel and per-element overrides.
+-- Defaults are intentionally restrained and inherit the active theme.
+local FOURD_DEFAULT_ELEMENT_STYLE = {
+    Radius = 9,
+    TextSize = 11,
+    AccentColor = Theme.Purple,
+    StrokeColor = Theme.Stroke,
+}
+
+local function fourDGetWindowStyle(window)
+    local style = fourDMergeStyle(FOURD_DEFAULT_ELEMENT_STYLE, window and window._customization)
+    if not style.BackgroundColor then style.BackgroundColor = Theme.Surface2 end
+    if not style.TextColor then style.TextColor = Theme.Text end
+    return style
+end
+
+-- Replace the opt-in behavior: every new element receives the current window,
+-- tab, section and per-control styles, in that precedence order.
+for _, factoryName in ipairs(FOURD_ELEMENT_FACTORIES) do
+    local currentFactory = Section[factoryName]
+    if type(currentFactory) == "function" and not Section["_4DAutoStyle_" .. factoryName] then
+        Section["_4DAutoStyle_" .. factoryName] = true
+        local fourDOriginalFactory = currentFactory
+        Section[factoryName] = function(self, config, ...)
+            local before = #(self._controls or {})
+            local result = fourDOriginalFactory(self, config, ...)
+            local row = self._controls and self._controls[#self._controls]
+            if row and #self._controls > before then
+                local window = self._tab and self._tab._window
+                local style = fourDGetWindowStyle(window)
+                if self._customization then style = fourDMergeStyle(style, self._customization) end
+                if type(config) == "table" then
+                    style = fourDMergeStyle(style, config.Style)
+                    style = fourDMergeStyle(style, config.Customization)
+                end
+                self._elementCustomizations = self._elementCustomizations or {}
+                local localStyle = type(config) == "table" and fourDMergeStyle(config.Style, config.Customization) or {}
+                self._elementCustomizations[#self._controls] = localStyle
+                fourDApplyElementStyle(row, style)
+                row:SetAttribute("4D_ElementIndex", #self._controls)
+                row:SetAttribute("4D_ElementName", tostring(type(config)=="table" and config.Name or factoryName))
+                if window then
+                    window._elementRegistry = window._elementRegistry or {}
+                    local elementName = tostring(type(config)=="table" and config.Name or factoryName)
+                    table.insert(window._elementRegistry, {
+                        Row=row, Tab=self._tab, Section=self, Index=#self._controls,
+                        Name=elementName, Type=factoryName,
+                    })
+                    local editor = window._individualSection
+                    if editor and self._tab ~= window._customizationTab then
+                        local elementIndex = #self._controls
+                        local elementOwner = self
+                        local elementStyle = table.clone(style)
+                        editor:CreateParagraph({Name=self._tab._name .. " / " .. tostring(self._name or "Section") .. " / " .. elementName,
+                            Content="Customize this control independently. Values here override global settings."})
+                        editor:CreateSlider({Name=elementName .. " radius", Range={0,24}, Increment=1,
+                            CurrentValue=style.Radius or 9,
+                            Callback=function(value) elementOwner:SetElementCustomization(elementIndex, {Radius=value}) end})
+                        editor:CreateSlider({Name=elementName .. " text size", Range={8,20}, Increment=1,
+                            CurrentValue=style.TextSize or 11,
+                            Callback=function(value) elementOwner:SetElementCustomization(elementIndex, {TextSize=value}) end})
+                        editor:CreateColorPicker({Name=elementName .. " accent", CurrentValue=style.AccentColor or Theme.Purple,
+                            Callback=function(value) elementOwner:SetElementCustomization(elementIndex, {AccentColor=value}) end})
+                    end
+                end
+            end
+            return result
+        end
+    end
+end
+
+function Window:SetCustomization(style)
+    if type(style) ~= "table" then return false end
+    self._customization = fourDMergeStyle(self._customization, style)
+    for _, tab in ipairs(self._tabs or {}) do
+        for _, section in ipairs(tab._sections or {}) do
+            if section.SetCustomization then section:SetCustomization(self._customization) end
+        end
+    end
+    return true
+end
+
+function Window:ResetCustomization()
+    self._customization = table.clone(FOURD_DEFAULT_ELEMENT_STYLE)
+    self._customization.AccentColor = Theme.Purple
+    self._customization.StrokeColor = Theme.Stroke
+    self._customization.BackgroundColor = Theme.Surface2
+    self._customization.TextColor = Theme.Text
+    for _, tab in ipairs(self._tabs or {}) do
+        for _, section in ipairs(tab._sections or {}) do
+            if section.SetCustomization then section:SetCustomization(self._customization) end
+        end
+    end
+    return true
+end
+
+local fourDBaseSectionSetCustomization = Section.SetCustomization
+function Section:SetCustomization(style)
+    if type(style) ~= "table" then return false end
+    self._customization = fourDMergeStyle(self._customization, style)
+    self._elementCustomizations = self._elementCustomizations or {}
+    for index, row in ipairs(self._controls or {}) do
+        local merged = fourDMergeStyle(self._customization, self._elementCustomizations[index])
+        fourDApplyElementStyle(row, merged)
+    end
+    return true
+end
+
+function Section:SetElementCustomization(index, style)
+    index = tonumber(index)
+    local row = index and self._controls and self._controls[index]
+    if not row or type(style) ~= "table" then return false end
+    self._elementCustomizations = self._elementCustomizations or {}
+    self._elementCustomizations[index] = fourDMergeStyle(self._elementCustomizations[index], style)
+    return fourDApplyElementStyle(row, self._elementCustomizations[index])
+end
+
+function Window:SetElementCustomization(tabName, sectionName, index, style)
+    if type(style) ~= "table" then return false end
+    for _, tab in ipairs(self._tabs or {}) do
+        if tab._name == tabName then
+            for _, section in ipairs(tab._sections or {}) do
+                if section._name == sectionName then
+                    return section:SetElementCustomization(index, style)
+                end
+            end
+            if tab._defaultSection and tab._defaultSection._name == sectionName then
+                return tab._defaultSection:SetElementCustomization(index, style)
+            end
+        end
+    end
+    return false
+end
+
+-- New tabs and sections inherit the global style, including those created after
+-- the Customization tab. Existing public API and return values remain unchanged.
+local fourDOriginalCreateTab = Window.CreateTab
+Window.CreateTab = function(self, ...)
+    local tab = fourDOriginalCreateTab(self, ...)
+    if tab and self._customization then tab._customization = table.clone(self._customization) end
+    return tab
+end
+local fourDOriginalCreateSection = Tab.CreateSection
+Tab.CreateSection = function(self, ...)
+    local section = fourDOriginalCreateSection(self, ...)
+    if section and (self._customization or self._window._customization) then
+        section._customization = fourDMergeStyle(self._window._customization, self._customization)
+    end
+    return section
+end
+
+local fourDOriginalCreateWindow = Library.CreateWindow
+Library.CreateWindow = function(selfOrConfig, maybeConfig)
+    local config = selfOrConfig == Library and maybeConfig or selfOrConfig
+    local window = fourDOriginalCreateWindow(selfOrConfig, maybeConfig)
+    if not window or window._destroyed then return window end
+    window._customization = fourDMergeStyle(FOURD_DEFAULT_ELEMENT_STYLE,
+        type(config) == "table" and config.Customization or nil)
+    window._customization.AccentColor = window._customization.AccentColor or Theme.Purple
+    window._customization.StrokeColor = window._customization.StrokeColor or Theme.Stroke
+    window._customization.BackgroundColor = window._customization.BackgroundColor or Theme.Surface2
+    window._customization.TextColor = window._customization.TextColor or Theme.Text
+    window._elementRegistry = {}
+    if type(config) ~= "table" or config.CustomizationTab ~= false then
+        local customTab = window:CreateTab("Customization", "⚙", "Global style and per-element overrides")
+        local globalSection = customTab:CreateSection("Global appearance")
+        globalSection:CreateParagraph({
+            Name="Global customization",
+            Content="These settings apply automatically to existing and newly created controls. Individual controls can override them with Customization or Style.",
+        })
+        globalSection:CreateSlider({Name="Corner radius", Range={0,24}, Increment=1, CurrentValue=window._customization.Radius or 9,
+            Callback=function(value) window:SetCustomization({Radius=value}) end})
+        globalSection:CreateSlider({Name="Text size", Range={8,20}, Increment=1, CurrentValue=window._customization.TextSize or 11,
+            Callback=function(value) window:SetCustomization({TextSize=value}) end})
+        globalSection:CreateColorPicker({Name="Accent color", CurrentValue=window._customization.AccentColor or Theme.Purple,
+            Callback=function(value) window:SetCustomization({AccentColor=value}) end})
+        globalSection:CreateColorPicker({Name="Element background", CurrentValue=window._customization.BackgroundColor or Theme.Surface2,
+            Callback=function(value) window:SetCustomization({BackgroundColor=value}) end})
+        globalSection:CreateColorPicker({Name="Text color", CurrentValue=window._customization.TextColor or Theme.Text,
+            Callback=function(value) window:SetCustomization({TextColor=value}) end})
+        globalSection:CreateColorPicker({Name="Border color", CurrentValue=window._customization.StrokeColor or Theme.Stroke,
+            Callback=function(value) window:SetCustomization({StrokeColor=value}) end})
+        globalSection:CreateButton({Name="Reset customization", Callback=function()
+            window:ResetCustomization()
+        end})
+        local individual = customTab:CreateSection("Individual element customization")
+        window._individualSection = individual
+        individual:CreateParagraph({Name="Per-element API", Content="For a single control, pass Customization={Radius=..., TextSize=..., BackgroundColor=..., TextColor=..., AccentColor=..., StrokeColor=...} in its config. Or call Section:SetElementCustomization(index, style). This overrides the global values for that control."})
+        individual:CreateParagraph({Name="Example", Content='MainTab:CreateButton({Name="Launch", Customization={Radius=4, TextSize=13, AccentColor=Color3.fromRGB(255,120,80)}, Callback=function() end})'})
+        window._customizationTab = customTab
+    end
+    return window
+end
+
+Library.Version = "5.3.3"
 
 -- Required for the standard loadstring(... )() workflow. The API is also
 -- published as getgenv().FourD for scripts that prefer the global reference.
