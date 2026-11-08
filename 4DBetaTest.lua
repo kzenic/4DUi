@@ -1,7 +1,9 @@
 --[[
-    4D UI Library | Beyond Dimensions v5.3.0
+    4D UI Library | Beyond Dimensions v5.3.1
     Single-file client UI for supported Roblox client/executor environments.
-    Made by artix12: Yeyzcje
+
+    Run this entire file directly once in Solara v3. No ModuleScript,
+    require(), LocalScript, or separate loader is needed.
 
     This is a visual UI framework only. It does not provide game cheats,
     remote-event abuse, anti-cheat bypasses, or exploit functionality.
@@ -1323,7 +1325,7 @@ function Library.CreateWindow(selfOrConfig, maybeConfig)
     local communityTitle = createLabel(sidebarFoot, "4D Framework", 12, Theme.Text, Enum.Font.GothamBold)
     communityTitle.Position = UDim2.fromOffset(12, 12)
     communityTitle.Size = UDim2.new(1, -24, 0, 20)
-    local communityVersion = createLabel(sidebarFoot, "v5.3.0  •  Open Source", 9, Theme.Muted, Enum.Font.Gotham)
+    local communityVersion = createLabel(sidebarFoot, "v5.3.1  •  Open Source", 9, Theme.Muted, Enum.Font.Gotham)
     communityVersion.Position = UDim2.fromOffset(12, 34)
     communityVersion.Size = UDim2.new(1, -24, 0, 16)
     local communityNote = createLabel(sidebarFoot, "Built for the community  ♥", 9, Theme.Muted, Enum.Font.Gotham)
@@ -1977,6 +1979,41 @@ end
 function Tab:CreateSection(name)
     return createSectionFor(self, self._page, name, nil)
 end
+
+-- Rayfield-style convenience methods: controls may be added directly to a tab.
+-- They are routed into one lazily-created default section, while explicit
+-- Tab:CreateSection() remains available for developers who want full grouping.
+function Tab:_GetDefaultSection()
+    if self._defaultSection and self._defaultSection._card and self._defaultSection._card.Parent then
+        return self._defaultSection
+    end
+    self._defaultSection = self:CreateSection("Controls")
+    return self._defaultSection
+end
+
+local TAB_CONTROL_METHODS = {
+    "CreateButton", "CreateToggle", "CreateSlider", "CreateDropdown",
+    "CreateTextbox", "CreateParagraph", "CreateKeybind",
+    "CreateColorPicker", "CreateLabel", "CreateDivider", "CreateImage",
+}
+for _, methodName in ipairs(TAB_CONTROL_METHODS) do
+    local controlMethod = methodName
+    Tab[controlMethod] = function(self, ...)
+        local section = self:_GetDefaultSection()
+        return section[controlMethod](section, ...)
+    end
+end
+Tab.AddButton = Tab.CreateButton
+Tab.AddToggle = Tab.CreateToggle
+Tab.AddSlider = Tab.CreateSlider
+Tab.AddDropdown = Tab.CreateDropdown
+Tab.AddTextbox = Tab.CreateTextbox
+Tab.AddParagraph = Tab.CreateParagraph
+Tab.AddKeybind = Tab.CreateKeybind
+Tab.AddColorPicker = Tab.CreateColorPicker
+Tab.AddLabel = Tab.CreateLabel
+Tab.AddDivider = Tab.CreateDivider
+Tab.AddImage = Tab.CreateImage
 
 function Tab:CreateColumns(gap)
     local spacing = math.clamp(tonumber(gap) or 12, 4, 28)
@@ -4594,7 +4631,7 @@ function Library:GetThemes()
     return names
 end
 
-Library.Version = "5.3.0"
+Library.Version = "5.3.1"
 Library.Theme = "Midnight"
 Library.Authoring = "Open Source UI Framework"
 Library.CreateWindow = Library.CreateWindow
@@ -4607,7 +4644,7 @@ Library.CreateWindow = Library.CreateWindow
 
 -- 4D v4.7.0 | Standalone executor edition
 -- A restrained dashboard layout: no decorative gradient rails or crowded cards.
-Library.Version = "5.3.0"
+Library.Version = "5.3.1"
 
 -- Persist normalized defaults now so the next injection starts from the same local theme.
 FOURD_PREFERENCES.Theme = savedThemeName
@@ -5505,7 +5542,7 @@ function Library:GetAnimations()
     return {"Cinematic", "Portal", "Starfall", "Aurora", "Waterfall", "Butterflies", "Sakura", "Midnight", "Fade", "Zoom", "Minimal", "None"}
 end
 
-Library.Version = "5.3.0"
+Library.Version = "5.3.1"
 Library.Theme = Library.Theme or "Midnight"
 Library.Authoring = "4D Open Source UI Framework • Rebuilt interaction core"
 Library.LoadingScreenDefaults = {
@@ -5523,11 +5560,21 @@ pcall(function()
     end
 end)
 
--- Standalone executor entry point: the UI is created as soon as this file runs.
-local startupOK, startupResult = pcall(start4DDemo)
-if not startupOK then
-    warn("[4D v" .. Library.Version .. "] Startup failed: " .. tostring(startupResult))
+-- Library mode is the default: loadstring(...)() returns the API and does not
+-- create an unsolicited demo window. Set FOURD_CONFIG.AutoStartDemo = true above
+-- when a standalone showcase is desired, or call Library:CreateDemo() manually.
+if FOURD_CONFIG.AutoStartDemo == true then
+    local startupOK, startupResult = pcall(start4DDemo)
+    if not startupOK then
+        warn("[4D v" .. Library.Version .. "] Demo startup failed: " .. tostring(startupResult))
+    else
+        Library.ActiveWindow = startupResult
+        print("[4D v" .. Library.Version .. "] Demo loaded. Ctrl+K toggles the interface.")
+    end
 else
-    Library.ActiveWindow = startupResult
-    print("[4D v" .. Library.Version .. "] Loaded. Ctrl+K toggles the interface; RightControl is an alternate toggle; Ctrl+Shift+K opens Command Deck.")
+    print("[4D v" .. Library.Version .. "] Library loaded. Create a window with FourD:CreateWindow(config).")
 end
+
+-- Required for the standard loadstring(... )() workflow. The API is also
+-- published as getgenv().FourD for scripts that prefer the global reference.
+return Library
