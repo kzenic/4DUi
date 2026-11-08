@@ -1923,7 +1923,7 @@ local Column = {}
 Column.__index = Column
 
 local function createSectionFor(tab, parent, name, layoutOwner)
-    local section = setmetatable({ _tab = tab }, Section)
+    local section = setmetatable({ _tab = tab, _customization = tab._customization and table.clone(tab._customization) or nil }, Section)
     local card = make("Frame", {
         Name = "Section_" .. tostring(name or "Section"),
         Size = UDim2.new(1, -4, 0, 0),
@@ -2182,6 +2182,7 @@ local function createControlRow(section, height)
     }, section._card)
     section._order += 1
     table.insert(section._controls, row)
+    section._lastElementRow = row
     return row
 end
 
@@ -2252,6 +2253,7 @@ function Section:CreateToggle(config)
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, 0, 0.5, 0),
         Size = UDim2.fromOffset(40, 22),
+        Name = "ToggleTrack",
         BackgroundColor3 = enabled and Theme.Purple or Theme.Surface3,
         Text = "",
         AutoButtonColor = false,
@@ -2319,6 +2321,7 @@ function Section:CreateSlider(config)
     }, row)
     corner(bar, 10)
     local fill = make("Frame", {
+        Name = "SliderFill",
         Size = UDim2.new(maximum == minimum and 0 or (value - minimum) / (maximum - minimum), 0, 1, 0),
         BackgroundColor3 = Theme.Purple,
         BorderSizePixel = 0,
@@ -2546,6 +2549,9 @@ function Section:CreateParagraph(config)
         ZIndex = 9,
     }, self._card)
     self._order += 1
+    self._lastElementRow = row
+    self._controls = self._controls or {}
+    table.insert(self._controls, row)
 
     local title = createLabel(row, config.Title or "Information", 11, Theme.Text, Enum.Font.GothamSemibold)
     title.Size = UDim2.new(1, 0, 0, 18)
@@ -2647,6 +2653,7 @@ function Section:CreateColorPicker(config)
         Color3.fromRGB(120, 90, 70), Color3.fromRGB(35, 35, 42),
     }
     local swatch = make("TextButton", {
+        Name = "ColorSwatch",
         AnchorPoint = Vector2.new(1, 0.5),
         Position = UDim2.new(1, 0, 0.5, 0),
         Size = UDim2.fromOffset(36, 26),
@@ -4444,6 +4451,199 @@ function Window:Destroy()
     if FOURD_ENV and FOURD_ENV.__FOURD_ACTIVE_WINDOW == self then FOURD_ENV.__FOURD_ACTIVE_WINDOW = nil end
     return true
 end
+
+
+
+-- 4D v5.3.2: element customization + collapsible folder containers.
+-- Customization is opt-in per control through config.Customization and can also
+-- be applied to existing/future controls through Section/Tab/Window methods.
+local function fourDApplyElementStyle(row, style)
+    if not row or not row.Parent or type(style) ~= "table" then return false end
+    local radius = tonumber(style.Radius or style.CornerRadius)
+    local bg = typeof(style.BackgroundColor) == "Color3" and style.BackgroundColor or nil
+    local textColor = typeof(style.TextColor) == "Color3" and style.TextColor or nil
+    local accent = typeof(style.AccentColor) == "Color3" and style.AccentColor or nil
+    local strokeColor = typeof(style.StrokeColor) == "Color3" and style.StrokeColor or nil
+    local textSize = tonumber(style.TextSize)
+    local transparency = tonumber(style.BackgroundTransparency)
+    local font = style.Font
+    if type(font) == "string" and Enum.Font[font] then font = Enum.Font[font] end
+    for _, object in ipairs(row:GetDescendants()) do
+        pcall(function()
+            if bg and (object:IsA("TextButton") or object:IsA("TextBox")) then
+                object.BackgroundColor3 = bg
+                object:SetAttribute("4D_CustomElementBackground", true)
+            end
+            if textColor and (object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox")) then
+                object.TextColor3 = textColor
+                object:SetAttribute("4D_CustomElementText", true)
+            end
+            if accent and (object:IsA("TextButton") or object.Name == "SliderFill" or object.Name == "ToggleTrack" or object.Name == "ColorSwatch" or object:IsA("UIGradient")) then
+                if object:IsA("UIGradient") then
+                    object.Color = ColorSequence.new(accent, accent:Lerp(Color3.new(1,1,1), 0.18))
+                else
+                    object.BackgroundColor3 = accent
+                end
+                object:SetAttribute("4D_CustomElementAccent", true)
+            end
+            if textSize and (object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox")) then
+                object.TextSize = math.clamp(math.floor(textSize + 0.5), 7, 32)
+            end
+            if font and typeof(font) == "EnumItem" and (object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox")) then
+                object.Font = font
+            end
+            if transparency and (object:IsA("TextButton") or object:IsA("TextBox")) then
+                object.BackgroundTransparency = math.clamp(transparency, 0, 1)
+            end
+            if strokeColor and object:IsA("UIStroke") then
+                object.Color = strokeColor
+                object:SetAttribute("4D_CustomElementStroke", true)
+            end
+            if radius and object:IsA("UICorner") then
+                object.CornerRadius = UDim.new(0, math.clamp(radius, 0, 28))
+            end
+        end)
+    end
+    return true
+end
+
+local function fourDMergeStyle(base, extra)
+    local result = {}
+    if type(base) == "table" then for k,v in pairs(base) do result[k] = v end end
+    if type(extra) == "table" then for k,v in pairs(extra) do result[k] = v end end
+    return result
+end
+
+function Section:SetCustomization(style)
+    if type(style) ~= "table" then return false end
+    self._customization = fourDMergeStyle(self._customization, style)
+    for _, row in ipairs(self._controls or {}) do fourDApplyElementStyle(row, self._customization) end
+    return true
+end
+
+function Section:SetElementCustomization(index, style)
+    local row = self._controls and self._controls[tonumber(index) or -1]
+    if not row then return false end
+    row:SetAttribute("4D_Customization", true)
+    return fourDApplyElementStyle(row, style)
+end
+
+local function fourDCreateFolder(owner, name, config)
+    config = config or {}
+    local tab = owner._tab or owner
+    if not tab or not tab._window or tab._window._destroyed then return nil end
+    local parent = owner._folderContainer or owner._card or owner._page
+    if not parent then return nil end
+    local order
+    if owner._page then
+        order = owner._nextLayoutOrder or 1
+        owner._nextLayoutOrder = order + 1
+    else
+        order = owner._order or 1
+        owner._order = order + 1
+    end
+    FOURD_PREFERENCES.FolderStates = FOURD_PREFERENCES.FolderStates or {}
+    local folderKey = tostring(config.Id or (tab._name .. "/" .. tostring(name or "Folder")))
+    local savedExpanded = FOURD_PREFERENCES.FolderStates[folderKey]
+    local initiallyExpanded = config.Expanded ~= nil and config.Expanded ~= false or (config.Expanded == nil and savedExpanded ~= false)
+    local card = make("Frame", {
+        Name = "4D_Folder_" .. tostring(name or "Folder"),
+        Size = UDim2.new(1, -4, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundColor3 = Theme.Surface,
+        BackgroundTransparency = Theme.CardTransparency or 0,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        LayoutOrder = order,
+        ZIndex = 8,
+    }, parent)
+    corner(card, tonumber(config.Radius) or 12)
+    stroke(card, Theme.Stroke, 0.48, 1)
+    make("UIListLayout", {Padding=UDim.new(0, 5), SortOrder=Enum.SortOrder.LayoutOrder}, card)
+    local header = make("TextButton", {
+        Name="FolderHeader", Size=UDim2.new(1,0,0,39), BackgroundColor3=Theme.Surface2,
+        BackgroundTransparency=0.18, BorderSizePixel=0, Text="", AutoButtonColor=false,
+        LayoutOrder=1, ZIndex=9,
+    }, card)
+    corner(header, 9)
+    local title = createLabel(header, tostring(name or "Folder"), 11, Theme.Text, Enum.Font.GothamSemibold)
+    title.Position=UDim2.fromOffset(12,0); title.Size=UDim2.new(1,-48,1,0); title.ZIndex=10
+    local arrow = createLabel(header, initiallyExpanded and "−" or "+", 17, Theme.Cyan, Enum.Font.GothamBold, Enum.TextXAlignment.Center)
+    arrow.AnchorPoint=Vector2.new(1,0.5); arrow.Position=UDim2.new(1,-10,0.5,0); arrow.Size=UDim2.fromOffset(24,28); arrow.ZIndex=10
+    local content = make("Frame", {
+        Name="FolderContent", Size=UDim2.new(1,-18,0,0), Position=UDim2.fromOffset(9,0),
+        AutomaticSize=Enum.AutomaticSize.Y, BackgroundTransparency=1, BorderSizePixel=0,
+        LayoutOrder=2, Visible=initiallyExpanded, ZIndex=9,
+    }, card)
+    make("UIListLayout", {Padding=UDim.new(0,8), SortOrder=Enum.SortOrder.LayoutOrder}, content)
+    make("UIPadding", {PaddingTop=UDim.new(0,3),PaddingBottom=UDim.new(0,10)}, content)
+    local folder = setmetatable({
+        _tab=tab, _card=content, _folderCard=card, _folderContainer=content,
+        _folderHeader=header, _folderTitle=title, _folderArrow=arrow,
+        _order=1, _controls={}, _customization=owner._customization and table.clone(owner._customization) or nil,
+        _name=tostring(name or "Folder"), _folderKey=folderKey, _expanded=initiallyExpanded,
+    }, Section)
+    addConnection(tab._window, header.Activated:Connect(function()
+        folder._expanded = not folder._expanded
+        content.Visible = folder._expanded
+        arrow.Text = folder._expanded and "−" or "+"
+        FOURD_PREFERENCES.FolderStates[folderKey] = folder._expanded
+        save4DPreferences()
+    end))
+    table.insert(tab._sections, folder)
+    if config.Customization then folder:SetCustomization(config.Customization) end
+    return folder
+end
+
+function Tab:CreateFolder(name, config) return fourDCreateFolder(self, name, config) end
+function Section:CreateFolder(name, config) return fourDCreateFolder(self, name, config) end
+Tab.AddFolder = Tab.CreateFolder
+Section.AddFolder = Section.CreateFolder
+
+-- Wrap every element factory once so per-element config customization is
+-- consistently supported without changing legacy return values or callbacks.
+local FOURD_ELEMENT_FACTORIES = {
+    "CreateButton", "CreateToggle", "CreateSlider", "CreateDropdown",
+    "CreateTextbox", "CreateParagraph", "CreateKeybind", "CreateColorPicker",
+    "CreateLabel", "CreateDivider", "CreateImage",
+}
+for _, factoryName in ipairs(FOURD_ELEMENT_FACTORIES) do
+    local originalFactory = Section[factoryName]
+    if type(originalFactory) == "function" and not Section["_4DWrapped_" .. factoryName] then
+        Section["_4DWrapped_" .. factoryName] = true
+        Section[factoryName] = function(self, config, ...)
+            local before = #(self._controls or {})
+            local result = originalFactory(self, config, ...)
+            local row = self._controls and self._controls[#self._controls]
+            if row and #self._controls > before then
+                local custom = type(config) == "table" and (config.Customization or config.Style) or nil
+                local combined = fourDMergeStyle(self._customization, custom)
+                if next(combined) then fourDApplyElementStyle(row, combined) end
+                row:SetAttribute("4D_ElementIndex", #self._controls)
+            end
+            return result
+        end
+    end
+end
+
+function Window:SetCustomization(style)
+    if type(style) ~= "table" then return false end
+    self._customization = fourDMergeStyle(self._customization, style)
+    for _, tab in ipairs(self._tabs or {}) do
+        for _, section in ipairs(tab._sections or {}) do
+            section:SetCustomization(self._customization)
+        end
+    end
+    return true
+end
+
+function Tab:SetCustomization(style)
+    if type(style) ~= "table" then return false end
+    self._customization = fourDMergeStyle(self._customization, style)
+    for _, section in ipairs(self._sections or {}) do section:SetCustomization(self._customization) end
+    return true
+end
+
 
 -- Familiar aliases make the API easier to learn for developers migrating from other UI libraries.
 Tab.AddSection = Tab.CreateSection
